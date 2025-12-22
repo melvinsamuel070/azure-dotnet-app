@@ -1,0 +1,233 @@
+# .azuredevops/pipelines/multi-stage-pipeline.yml
+name: $(Build.SourceBranchName)-$(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - master
+      - release/*
+  paths:
+    exclude:
+      - README.md
+      - '*.md'
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    exclude:
+      - README.md
+      - '*.md'
+
+variables:
+  # ACR Details - UPDATE THIS WITH YOUR ACR NAME!
+  - name: acrName
+    value: 'myacrdemo2025'  # CHANGE THIS to your actual ACR name
+  - name: acrLoginServer
+    value: '$(acrName).azurecr.io'
+  - name: imageName
+    value: 'myapp'
+  - name: tag
+    value: '$(Build.SourceBranchName)-$(Build.BuildId)'
+  
+  # AKS Namespaces
+  - name: devNamespace
+    value: 'dev-namespace'
+  - name: testNamespace
+    value: 'test-namespace'
+  - name: prodNamespace
+    value: 'prod-namespace'
+
+stages:
+  # STAGE 1: BUILD
+  - stage: Build
+    displayName: 'Build Docker Image'
+    jobs:
+    - job: BuildJob
+      displayName: 'Build and Push to ACR'
+      pool:
+        vmImage: 'ubuntu-latest'
+      
+      steps:
+      # Step 1: Checkout code
+      - checkout: self
+        fetchDepth: 1
+      
+      # Step 2: Setup .NET
+      - task: UseDotNet@2
+        displayName: 'Use .NET 8.0'
+        inputs:
+          version: '8.0.x'
+      
+      # Step 3: Restore dependencies
+      - task: DotNetCoreCLI@2
+        displayName: 'Restore dependencies'
+        inputs:
+          command: 'restore'
+          projects: '**/*.csproj'
+      
+      # Step 4: Build application
+      - task: DotNetCoreCLI@2
+        displayName: 'Build application'
+        inputs:
+          command: 'build'
+          projects: '**/*.csproj'
+          arguments: '--configuration Release --no-restore'
+      
+      # Step 5: Run tests
+      - task: DotNetCoreCLI@2
+        displayName: 'Run tests'
+        inputs:
+          command: 'test'
+          projects: '**/*Tests/*.csproj'
+          arguments: '--configuration Release --no-build --verbosity normal'
+      
+      # Step 6: Docker login
+      - task: Docker@2
+        displayName: 'Login to Azure Container Registry'
+        inputs:
+          command: 'login'
+          containerRegistry: 'acr-connection'
+      
+      # Step 7: Build and push Docker image
+      - task: Docker@2
+        displayName: 'Build and Push Docker Image'
+        inputs:
+          command: 'buildAndPush'
+          repository: '$(imageName)'
+          dockerfile: '**/Dockerfile'
+          containerRegistry: 'acr-connection'
+          tags: |
+            $(tag)
+            latest
+      
+      # Step 8: Publish Kubernetes manifests
+      - task: PublishBuildArtifacts@1
+        displayName: 'Publish Kubernetes Manifests'
+        inputs:
+          PathtoPublish: '$(System.DefaultWorkingDirectory)/kubernetes'
+          ArtifactName: 'manifests'
+
+  # STAGE 2: DEV DEPLOYMENT (Automatic)
+  - stage: Dev
+    displayName: 'Deploy to Dev'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    
+    jobs:
+    - deployment: DeployToDev
+      displayName: 'Deploy to Dev AKS'
+      environment: 'dev'
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            # Step 1: Download manifests
+            - download: current
+              artifact: manifests
+            
+            # Step 2: Create namespace if not exists
+            - task: Bash@3
+              displayName: 'Create dev namespace'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  kubectl create namespace $(devNamespace) --dry-run=client -o yaml | kubectl apply -f -
+            
+            # Step 3: Replace image placeholder in deployment
+            - task: Bash@3
+              displayName: 'Update deployment with image tag'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  sed -i "s|CONTAINER_IMAGE_PLACEHOLDER|$(acrLoginServer)/$(imageName):$(tag)|g" $(Pipeline.Workspace)/manifests/deployment.yaml
+            
+            # Step 4: Deploy to dev namespace
+            - task: Kubernetes@1
+              displayName: 'Deploy to Dev'
+              inputs:
+                connectionType: 'Azure Resource Manager'
+                azureSubscriptionEndpoint: 'aks-connection'
+                azureResourceGroup: 'myResourceGroup'
+                kubernetesCluster: 'myAKSCluster'
+                namespace: '$(devNamespace)'
+                command: 'apply'
+                arguments: '-f $(Pipeline.Workspace)/manifests'
+                secretType: 'dockerRegistry'
+                containerRegistryType: 'Azure Container Registry'
+
+  # STAGE 3: TEST DEPLOYMENT (Requires approval)
+  - stage: Test
+    displayName: 'Deploy to Test'
+    dependsOn: Dev
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    
+    jobs:
+    - deployment: DeployToTest
+      displayName: 'Deploy to Test AKS'
+      environment: 'test'
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            - download: current
+              artifact: manifests
+            
+            - task: Bash@3
+              displayName: 'Create test namespace'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  kubectl create namespace $(testNamespace) --dry-run=client -o yaml | kubectl apply -f -
+            
+            - task: Kubernetes@1
+              displayName: 'Deploy to Test'
+              inputs:
+                connectionType: 'Azure Resource Manager'
+                azureSubscriptionEndpoint: 'aks-connection'
+                azureResourceGroup: 'myResourceGroup'
+                kubernetesCluster: 'myAKSCluster'
+                namespace: '$(testNamespace)'
+                command: 'apply'
+                arguments: '-f $(Pipeline.Workspace)/manifests'
+                secretType: 'dockerRegistry'
+                containerRegistryType: 'Azure Container Registry'
+
+  # STAGE 4: PRODUCTION DEPLOYMENT (Requires approval)
+  - stage: Prod
+    displayName: 'Deploy to Production'
+    dependsOn: Test
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    
+    jobs:
+    - deployment: DeployToProd
+      displayName: 'Deploy to Production AKS'
+      environment: 'prod'
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            - download: current
+              artifact: manifests
+            
+            - task: Bash@3
+              displayName: 'Create prod namespace'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  kubectl create namespace $(prodNamespace) --dry-run=client -o yaml | kubectl apply -f -
+            
+            - task: Kubernetes@1
+              displayName: 'Deploy to Production'
+              inputs:
+                connectionType: 'Azure Resource Manager'
+                azureSubscriptionEndpoint: 'aks-connection'
+                azureResourceGroup: 'myResourceGroup'
+                kubernetesCluster: 'myAKSCluster'
+                namespace: '$(prodNamespace)'
+                command: 'apply'
+                arguments: '-f $(Pipeline.Workspace)/manifests'
+                secretType: 'dockerRegistry'
+                containerRegistryType: 'Azure Container Registry'

@@ -1,0 +1,119 @@
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: myapp-deployment
+# spec:
+#   replicas: 1
+#   selector:
+#     matchLabels:
+#       app: myapp
+#   template:
+#     metadata:
+#       labels:
+#         app: myapp
+#     spec:
+#       containers:
+#       - name: myapp
+#         image: myapp:main-build1765535068
+#         ports:
+#         - containerPort: 8080
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: myapp-deployment
+# spec:
+#   replicas: 1
+#   selector:
+#     matchLabels:
+#       app: myapp
+#   template:
+#     metadata:
+#       labels:
+#         app: myapp
+#     spec:
+#       containers:
+#       - name: myapp
+#         image: myapp:main-build1765535068
+#         imagePullPolicy: IfNotPresent  # ADDED: Use local if available
+#         ports:
+#         - containerPort: 8080
+#         env:
+#         - name: ASPNETCORE_URLS
+#           value: http://*:8080
+#         readinessProbe:
+#           httpGet:
+#             path: /health
+#             port: 8080
+#           initialDelaySeconds: 10
+#           periodSeconds: 5
+#         livenessProbe:
+#           httpGet:
+#             path: /health
+#             port: 8080
+#           initialDelaySeconds: 30
+#           periodSeconds: 10
+
+
+
+
+
+
+
+
+
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-deployment
+  labels:
+    app: myapp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: v1
+    spec:
+      containers:
+      - name: myapp
+        image: IMAGE_TAG  # ← This gets replaced by pipeline
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        env:
+        - name: ASPNETCORE_URLS
+          value: http://+:8080
+        # ASPNETCORE_ENVIRONMENT is set by pipeline via kubectl set env
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 5
