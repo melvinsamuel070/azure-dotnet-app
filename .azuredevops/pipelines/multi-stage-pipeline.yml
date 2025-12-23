@@ -116,7 +116,7 @@ stages:
   - stage: Dev
     displayName: 'Deploy to Dev'
     dependsOn: Build
-    condition: and(succeeded(), eq(variables['Build.SourceBranchName'], 'main'))
+    condition: and(succeeded(), or(eq(variables['Build.SourceBranchName'], 'master'), eq(variables['Build.SourceBranchName'], 'main')))
     
     jobs:
     - deployment: DeployToDev
@@ -164,7 +164,7 @@ stages:
   - stage: Test
     displayName: 'Deploy to Test'
     dependsOn: Dev
-    condition: and(succeeded(), eq(variables['Build.SourceBranchName'], 'main'))
+    condition: and(succeeded(), or(eq(variables['Build.SourceBranchName'], 'master'), eq(variables['Build.SourceBranchName'], 'main')))
     
     jobs:
     - deployment: DeployToTest
@@ -201,7 +201,7 @@ stages:
   - stage: Prod
     displayName: 'Deploy to Production'
     dependsOn: Test
-    condition: and(succeeded(), eq(variables['Build.SourceBranchName'], 'main'))
+    condition: and(succeeded(), or(eq(variables['Build.SourceBranchName'], 'master'), eq(variables['Build.SourceBranchName'], 'main')))
     
     jobs:
     - deployment: DeployToProd
