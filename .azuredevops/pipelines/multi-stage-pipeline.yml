@@ -49,7 +49,7 @@ stages:
     - job: BuildJob
       displayName: 'Build and Push to ACR'
       pool:
-        name: Default   # Uses your self-hosted agent (no more Microsoft-hosted parallelism error)
+        name: my-linux-agent   # Uses your self-hosted agent (no more Microsoft-hosted parallelism error)
       
       steps:
       # Step 1: Checkout code
