@@ -98,8 +98,8 @@ stages:
         inputs:
           command: 'buildAndPush'
           repository: '$(imageName)'
-          dockerfile: '.azuredevops/pipelines/src/MyApp/Dockerfile'
-          buildContext: '.'
+          dockerfile: 'Dockerfile'
+          buildContext: '$(System.DefaultWorkingDirectory)'
           containerRegistry: 'acr-connection'
           tags: |
             $(tag)
