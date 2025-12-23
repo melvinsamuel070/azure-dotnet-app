@@ -99,6 +99,7 @@ stages:
           command: 'buildAndPush'
           repository: '$(imageName)'
           dockerfile: '.azuredevops/pipelines/src/MyApp/Dockerfile'
+          buildContext: '.'
           containerRegistry: 'acr-connection'
           tags: |
             $(tag)
