@@ -48,7 +48,7 @@ stages:
     jobs:
     - job: BuildJob
       displayName: 'Build and Push to ACR'
-      pool: 'my-linux-agent'   # ✅ CORRECTED: This matches your self-hosted agent pool
+      pool: 'my-linux-agent'   # ✅ CORRECT: This matches your self-hosted agent pool
       
       steps:
       # Step 1: Checkout code
@@ -121,6 +121,7 @@ stages:
     - deployment: DeployToDev
       displayName: 'Deploy to Dev AKS'
       environment: 'dev'
+      pool: 'my-linux-agent'   # ✅ FIXED: Added pool for deployment job
       strategy:
         runOnce:
           deploy:
@@ -169,6 +170,7 @@ stages:
     - deployment: DeployToTest
       displayName: 'Deploy to Test AKS'
       environment: 'test'
+      pool: 'my-linux-agent'   # ✅ FIXED: Added pool for deployment job
       strategy:
         runOnce:
           deploy:
@@ -206,6 +208,7 @@ stages:
     - deployment: DeployToProd
       displayName: 'Deploy to Production AKS'
       environment: 'prod'
+      pool: 'my-linux-agent'   # ✅ FIXED: Added pool for deployment job
       strategy:
         runOnce:
           deploy:
