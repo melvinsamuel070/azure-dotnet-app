@@ -75,7 +75,6 @@
 
 
 
-
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -93,19 +92,17 @@ spec:
         app: myapp
         version: v1
     spec:
-      # ✅ ADD THIS SECTION - CRITICAL FOR ACR AUTHENTICATION
       imagePullSecrets:
       - name: acr-secret
       containers:
       - name: myapp
-        image: myacrdemo2025.azurecr.io/myapp:latest  # ✅ Fixed: Your ACR image format
+        image: CONTAINER_IMAGE_PLACEHOLDER  # ← CHANGE THIS LINE!
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
         env:
         - name: ASPNETCORE_URLS
           value: http://+:8080
-        # ASPNETCORE_ENVIRONMENT is set by pipeline via kubectl set env
         readinessProbe:
           httpGet:
             path: /health
