@@ -579,7 +579,7 @@ variables:
   - name: imageName
     value: 'myapp'
   - name: tag
-    value: '$(Build.SourceBranchName)-$(Build.BuildId)'
+    value: '$(Build.SourceBranchName)-$(Build.BuildId)'  # e.g., master-63
   
   # AKS Namespaces
   - name: devNamespace
@@ -653,8 +653,7 @@ stages:
           buildContext: '$(System.DefaultWorkingDirectory)'
           containerRegistry: 'acr-connection'
           tags: |
-            $(tag)
-            latest
+            $(tag)  # Versioned tag only (e.g., master-63)
       
       # Step 8: Publish Kubernetes manifests
       - task: PublishBuildArtifacts@1
@@ -671,7 +670,10 @@ stages:
           targetType: 'inline'
           script: |
             echo "Verifying image: $(acrLoginServer)/$(imageName):$(tag)"
-            az acr repository show-tags --name $(acrName) --repository $(imageName) --output table
+            az acr repository show-tags \
+              --name $(acrName) \
+              --repository $(imageName) \
+              --output table
             echo "Image successfully stored in ACR"
 
   # STAGE 2: DEV DEPLOYMENT (Automatic)
@@ -696,6 +698,7 @@ stages:
               inputs:
                 targetType: 'inline'
                 script: |
+                  echo "Environment Validation"
                   kubectl version --client
                   kubectl config current-context
                   kubectl config use-context minikube
@@ -712,10 +715,12 @@ stages:
                 script: |
                   kubectl config use-context minikube
                   
+                  # Get ACR credentials
                   az acr update -n $(acrName) --admin-enabled true
                   USERNAME=$(az acr credential show --name $(acrName) --query "username" -o tsv)
                   PASSWORD=$(az acr credential show --name $(acrName) --query "passwords[0].value" -o tsv)
                   
+                  # Create or update secret
                   kubectl create secret docker-registry acr-secret \
                     --namespace $(devNamespace) \
                     --docker-server=$(acrLoginServer) \
@@ -730,14 +735,19 @@ stages:
                 targetType: 'inline'
                 script: |
                   kubectl config use-context minikube
+                  echo "Creating namespace: $(devNamespace)"
                   kubectl create namespace $(devNamespace) --dry-run=client -o yaml | kubectl apply -f -
             
-            # Step 5: Replace image placeholder in deployment
+            # Step 5: Update deployment with image tag
             - task: Bash@3
               displayName: 'Update deployment with image tag'
               inputs:
                 targetType: 'inline'
                 script: |
+                  echo "Updating image to: $(acrLoginServer)/$(imageName):$(tag)"
+                  # Backup original
+                  cp $(Pipeline.Workspace)/manifests/deployment.yaml $(Pipeline.Workspace)/manifests/deployment.yaml.backup
+                  # Replace placeholder
                   sed -i "s|CONTAINER_IMAGE_PLACEHOLDER|$(acrLoginServer)/$(imageName):$(tag)|g" $(Pipeline.Workspace)/manifests/deployment.yaml
             
             # Step 6: Deploy to dev namespace
@@ -747,63 +757,47 @@ stages:
               inputs:
                 targetType: 'inline'
                 script: |
+                  set -e
                   kubectl config use-context minikube
+                  
+                  echo "Deploying $(acrLoginServer)/$(imageName):$(tag)"
                   kubectl apply -f $(Pipeline.Workspace)/manifests -n $(devNamespace)
+                  
+                  echo "Waiting for rollout..."
                   kubectl rollout status deployment/myapp-deployment -n $(devNamespace) --timeout=120s
+                  
+                  echo "Verification"
+                  kubectl get pods -n $(devNamespace) -o wide
+                  
+                  echo "Deployment successful!"
             
-            # Step 7: Improved Health Check
+            # Step 7: Health check
             - task: Bash@3
               displayName: 'Health Check'
               condition: succeeded()
-              continueOnError: true  # Don't fail pipeline on health check
-              timeoutInMinutes: 2    # Give it more time
               inputs:
                 targetType: 'inline'
                 script: |
+                  echo "Application Health Check"
                   kubectl config use-context minikube
                   
-                  echo "=== Health Check Starting ==="
+                  # Wait for pod to be ready
+                  kubectl wait --for=condition=ready pod -l app=myapp -n $(devNamespace) --timeout=60s
                   
-                  # Wait for pod to be Running (not necessarily Ready)
-                  echo "Waiting for pod to be Running..."
-                  timeout 90 kubectl wait --for=condition=ready pod -l app=myapp -n $(devNamespace) || echo "Pod not ready yet, continuing..."
+                  echo "Testing endpoint..."
+                  kubectl port-forward deployment/myapp-deployment 8080:8080 -n $(devNamespace) &
+                  PID=$!
+                  sleep 5
                   
-                  # Check pod status
-                  echo "=== Pod Status ==="
-                  kubectl get pods -n $(devNamespace) -o wide
-                  
-                  # If any pod is Running, try to test it
-                  RUNNING_POD=$(kubectl get pods -n $(devNamespace) -l app=myapp --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-                  
-                  if [ -n "$RUNNING_POD" ]; then
-                    echo "Found running pod: $RUNNING_POD"
-                    
-                    # Check pod logs
-                    echo "=== Checking logs ==="
-                    kubectl logs -n $(devNamespace) $RUNNING_POD --tail=10
-                    
-                    # Try to test the endpoint
-                    echo "=== Testing application ==="
-                    kubectl port-forward pod/$RUNNING_POD 8080:8080 -n $(devNamespace) &
-                    PORT_FORWARD_PID=$!
-                    sleep 5
-                    
-                    if curl -s --max-time 10 http://localhost:8080 > /dev/null; then
-                      echo "✅ SUCCESS: Application is responding!"
-                      curl -s http://localhost:8080 | head -1
-                    else
-                      echo "⚠️ Application not responding, but pod is running"
-                    fi
-                    
-                    kill $PORT_FORWARD_PID 2>/dev/null
+                  if curl -s http://localhost:8080 > /dev/null; then
+                    echo "Application is healthy and responding"
+                    curl -s http://localhost:8080 | head -1
                   else
-                    echo "❌ No running pods found"
-                    echo "Checking pod events for errors..."
-                    kubectl describe pods -n $(devNamespace) | grep -A 10 "Events:" | head -20
+                    echo "Application not responding"
                   fi
                   
-                  echo "=== Health Check Complete ==="
-                  echo "Note: Health check warnings do NOT fail the pipeline"
+                  kill $PID 2>/dev/null
+                  echo "Dev deployment completed successfully!"
 
   # STAGE 3: TEST DEPLOYMENT (Requires approval)
   - stage: Test
@@ -822,7 +816,7 @@ stages:
           deploy:
             steps:
             - task: Bash@3
-              displayName: 'Set kubectl context'
+              displayName: 'Validate Environment'
               inputs:
                 targetType: 'inline'
                 script: |
@@ -830,6 +824,23 @@ stages:
             
             - download: current
               artifact: manifests
+            
+            - task: Bash@3
+              displayName: 'Ensure ACR Pull Secret (Test)'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  kubectl config use-context minikube
+                  az acr update -n $(acrName) --admin-enabled true
+                  USERNAME=$(az acr credential show --name $(acrName) --query "username" -o tsv)
+                  PASSWORD=$(az acr credential show --name $(acrName) --query "passwords[0].value" -o tsv)
+                  
+                  kubectl create secret docker-registry acr-secret \
+                    --namespace $(testNamespace) \
+                    --docker-server=$(acrLoginServer) \
+                    --docker-username=$USERNAME \
+                    --docker-password=$PASSWORD \
+                    --dry-run=client -o yaml | kubectl apply -f -
             
             - task: Bash@3
               displayName: 'Create test namespace'
@@ -844,9 +855,11 @@ stages:
               inputs:
                 targetType: 'inline'
                 script: |
+                  set -e
                   kubectl config use-context minikube
                   kubectl apply -f $(Pipeline.Workspace)/manifests -n $(testNamespace)
                   kubectl rollout status deployment/myapp-deployment -n $(testNamespace) --timeout=120s
+                  echo "Test deployment successful!"
 
   # STAGE 4: PRODUCTION DEPLOYMENT (Requires approval)
   - stage: Prod
@@ -865,7 +878,7 @@ stages:
           deploy:
             steps:
             - task: Bash@3
-              displayName: 'Set kubectl context'
+              displayName: 'Validate Environment'
               inputs:
                 targetType: 'inline'
                 script: |
@@ -873,6 +886,23 @@ stages:
             
             - download: current
               artifact: manifests
+            
+            - task: Bash@3
+              displayName: 'Ensure ACR Pull Secret (Prod)'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  kubectl config use-context minikube
+                  az acr update -n $(acrName) --admin-enabled true
+                  USERNAME=$(az acr credential show --name $(acrName) --query "username" -o tsv)
+                  PASSWORD=$(az acr credential show --name $(acrName) --query "passwords[0].value" -o tsv)
+                  
+                  kubectl create secret docker-registry acr-secret \
+                    --namespace $(prodNamespace) \
+                    --docker-server=$(acrLoginServer) \
+                    --docker-username=$USERNAME \
+                    --docker-password=$PASSWORD \
+                    --dry-run=client -o yaml | kubectl apply -f -
             
             - task: Bash@3
               displayName: 'Create prod namespace'
@@ -887,6 +917,8 @@ stages:
               inputs:
                 targetType: 'inline'
                 script: |
+                  set -e
                   kubectl config use-context minikube
                   kubectl apply -f $(Pipeline.Workspace)/manifests -n $(prodNamespace)
                   kubectl rollout status deployment/myapp-deployment -n $(prodNamespace) --timeout=120s
+                  echo "Production deployment successful!"
