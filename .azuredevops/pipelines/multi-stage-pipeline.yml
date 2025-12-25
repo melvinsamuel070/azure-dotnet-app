@@ -286,7 +286,7 @@ variables:
   - name: imageName
     value: 'myapp'
   - name: tag
-    value: '$(Build.SourceBranchName)-$(Build.BuildId)'
+    value: '$(Build.SourceBranchName)-$(Build.BuildId)'  # e.g., master-64
   
   # AKS Namespaces
   - name: devNamespace
@@ -304,7 +304,6 @@ stages:
     - job: BuildJob
       displayName: 'Build and Push to ACR'
       pool: 'my-linux-agent'
-      timeoutInMinutes: 120
       
       steps:
       # Step 1: Checkout code
@@ -320,7 +319,6 @@ stages:
       # Step 3: Restore dependencies
       - task: DotNetCoreCLI@2
         displayName: 'Restore dependencies'
-        continueOnError: true
         inputs:
           command: 'restore'
           projects: '**/*.csproj'
@@ -336,7 +334,6 @@ stages:
       # Step 5: Run tests
       - task: DotNetCoreCLI@2
         displayName: 'Run tests'
-        continueOnError: true
         inputs:
           command: 'test'
           projects: '**/*Tests/*.csproj'
@@ -352,7 +349,6 @@ stages:
       # Step 7: Build and push Docker image
       - task: Docker@2
         displayName: 'Build and Push Docker Image'
-        timeoutInMinutes: 30
         inputs:
           command: 'buildAndPush'
           repository: '$(imageName)'
@@ -369,17 +365,6 @@ stages:
         inputs:
           PathtoPublish: '$(System.DefaultWorkingDirectory)/kubernetes'
           ArtifactName: 'manifests'
-      
-      # Step 9: Verify image was pushed
-      - task: Bash@3
-        displayName: 'Verify Image in ACR'
-        condition: succeeded()
-        inputs:
-          targetType: 'inline'
-          script: |
-            echo "Verifying image: $(acrLoginServer)/$(imageName):$(tag)"
-            az acr repository show-tags --name $(acrName) --repository $(imageName) --output table
-            echo "Image successfully stored in ACR"
 
   # STAGE 2: DEV DEPLOYMENT (Automatic)
   - stage: Dev
@@ -392,33 +377,23 @@ stages:
       displayName: 'Deploy to Dev AKS'
       environment: 'dev'
       pool: 'my-linux-agent'
-      timeoutInMinutes: 30
       strategy:
         runOnce:
           deploy:
             steps:
-            # Step 1: Validate Environment
+            # Step 1: Ensure kubectl uses minikube
             - task: Bash@3
-              displayName: 'Validate Environment'
+              displayName: 'Set kubectl context'
+              inputs:
+                targetType: 'inline'
+                script: kubectl config use-context minikube
+            
+            # Step 2: Ensure ACR pull secret exists
+            - task: Bash@3
+              displayName: 'Setup ACR credentials'
               inputs:
                 targetType: 'inline'
                 script: |
-                  kubectl version --client
-                  kubectl config current-context
-                  kubectl config use-context minikube
-            
-            # Step 2: Download manifests
-            - download: current
-              artifact: manifests
-            
-            # Step 3: Ensure ACR Pull Secret
-            - task: Bash@3
-              displayName: 'Ensure ACR Pull Secret'
-              inputs:
-                targetType: 'inline'
-                script: |
-                  kubectl config use-context minikube
-                  
                   az acr update -n $(acrName) --admin-enabled true
                   USERNAME=$(az acr credential show --name $(acrName) --query "username" -o tsv)
                   PASSWORD=$(az acr credential show --name $(acrName) --query "passwords[0].value" -o tsv)
@@ -430,13 +405,16 @@ stages:
                     --docker-password=$PASSWORD \
                     --dry-run=client -o yaml | kubectl apply -f -
             
+            # Step 3: Download manifests
+            - download: current
+              artifact: manifests
+            
             # Step 4: Create namespace if not exists
             - task: Bash@3
               displayName: 'Create dev namespace'
               inputs:
                 targetType: 'inline'
                 script: |
-                  kubectl config use-context minikube
                   kubectl create namespace $(devNamespace) --dry-run=client -o yaml | kubectl apply -f -
             
             # Step 5: Replace image placeholder in deployment
@@ -450,23 +428,11 @@ stages:
             # Step 6: Deploy to dev namespace
             - task: Bash@3
               displayName: 'Deploy to Dev'
-              timeoutInMinutes: 10
               inputs:
                 targetType: 'inline'
                 script: |
-                  kubectl config use-context minikube
                   kubectl apply -f $(Pipeline.Workspace)/manifests -n $(devNamespace)
-                  kubectl rollout status deployment/myapp-deployment -n $(devNamespace) --timeout=120s
-            
-            # Step 7: Health check
-            - task: Bash@3
-              displayName: 'Health Check'
-              condition: succeeded()
-              inputs:
-                targetType: 'inline'
-                script: |
-                  kubectl config use-context minikube
-                  kubectl wait --for=condition=ready pod -l app=myapp -n $(devNamespace) --timeout=60s
+                  kubectl rollout status deployment/myapp-deployment -n $(devNamespace) --timeout=60s
 
   # STAGE 3: TEST DEPLOYMENT (Requires approval)
   - stage: Test
@@ -479,7 +445,6 @@ stages:
       displayName: 'Deploy to Test AKS'
       environment: 'test'
       pool: 'my-linux-agent'
-      timeoutInMinutes: 30
       strategy:
         runOnce:
           deploy:
@@ -488,8 +453,7 @@ stages:
               displayName: 'Set kubectl context'
               inputs:
                 targetType: 'inline'
-                script: |
-                  kubectl config use-context minikube
+                script: kubectl config use-context minikube
             
             - download: current
               artifact: manifests
@@ -499,7 +463,6 @@ stages:
               inputs:
                 targetType: 'inline'
                 script: |
-                  kubectl config use-context minikube
                   kubectl create namespace $(testNamespace) --dry-run=client -o yaml | kubectl apply -f -
             
             - task: Bash@3
@@ -507,9 +470,8 @@ stages:
               inputs:
                 targetType: 'inline'
                 script: |
-                  kubectl config use-context minikube
                   kubectl apply -f $(Pipeline.Workspace)/manifests -n $(testNamespace)
-                  kubectl rollout status deployment/myapp-deployment -n $(testNamespace) --timeout=120s
+                  kubectl rollout status deployment/myapp-deployment -n $(testNamespace) --timeout=60s
 
   # STAGE 4: PRODUCTION DEPLOYMENT (Requires approval)
   - stage: Prod
@@ -522,7 +484,6 @@ stages:
       displayName: 'Deploy to Production AKS'
       environment: 'prod'
       pool: 'my-linux-agent'
-      timeoutInMinutes: 30
       strategy:
         runOnce:
           deploy:
@@ -531,8 +492,7 @@ stages:
               displayName: 'Set kubectl context'
               inputs:
                 targetType: 'inline'
-                script: |
-                  kubectl config use-context minikube
+                script: kubectl config use-context minikube
             
             - download: current
               artifact: manifests
@@ -542,7 +502,6 @@ stages:
               inputs:
                 targetType: 'inline'
                 script: |
-                  kubectl config use-context minikube
                   kubectl create namespace $(prodNamespace) --dry-run=client -o yaml | kubectl apply -f -
             
             - task: Bash@3
@@ -550,6 +509,5 @@ stages:
               inputs:
                 targetType: 'inline'
                 script: |
-                  kubectl config use-context minikube
                   kubectl apply -f $(Pipeline.Workspace)/manifests -n $(prodNamespace)
-                  kubectl rollout status deployment/myapp-deployment -n $(prodNamespace) --timeout=120s
+                  kubectl rollout status deployment/myapp-deployment -n $(prodNamespace) --timeout=60s
