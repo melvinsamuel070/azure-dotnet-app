@@ -93,9 +93,12 @@ spec:
         app: myapp
         version: v1
     spec:
+      # ✅ ADD THIS SECTION - CRITICAL FOR ACR AUTHENTICATION
+      imagePullSecrets:
+      - name: acr-secret
       containers:
       - name: myapp
-        image: IMAGE_TAG  # ← This gets replaced by pipeline
+        image: myacrdemo2025.azurecr.io/myapp:latest  # ✅ Fixed: Your ACR image format
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
