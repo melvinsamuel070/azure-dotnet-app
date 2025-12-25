@@ -80,7 +80,6 @@
 
 
 
-
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
@@ -132,7 +131,7 @@ app.MapGet("/health", () => Results.Ok(new
     timestamp = DateTime.UtcNow 
 }));
 
-//  BEAUTIFUL CI/CD DASHBOARD INTERFACE
+//  BEAUTIFUL CI/CD DASHBOARD INTERFACE - **REPLACES** the old message
 app.MapGet("/", () => Results.Content(@"
 <!DOCTYPE html>
 <html lang='en'>
@@ -366,7 +365,7 @@ app.MapGet("/", () => Results.Content(@"
 <body>
     <div class='dashboard-container'>
         <div class='header'>
-            <h1 class='title'>🚀 Azure DevOps CI/CD Dashboard</h1>
+            <h1 class='title'> Azure DevOps CI/CD Dashboard</h1>
             <p class='subtitle'>A fully automated deployment pipeline for .NET 8 applications</p>
             <div class='status-badge'>
                 <i class='fas fa-check-circle'></i> Deployment Successful
@@ -375,7 +374,7 @@ app.MapGet("/", () => Results.Content(@"
         
         <div class='metrics-grid'>
             <div class='metric-card'>
-                <div class='metric-icon'>🔧</div>
+                <div class='metric-icon'></div>
                 <div class='metric-title'>Build Pipeline</div>
                 <div class='metric-value'>Azure DevOps</div>
                 <div class='metric-label'>Multi-stage YAML configuration</div>
@@ -524,6 +523,9 @@ app.MapGet("/", () => Results.Content(@"
 </body>
 </html>
 ", "text/html"));
+
+//  REMOVED: This line was overriding the beautiful dashboard!
+// app.MapGet("/", () => "MyApp API is running. Use /swagger for API documentation.");
 
 app.Run();
 
