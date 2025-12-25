@@ -286,7 +286,7 @@ variables:
   - name: imageName
     value: 'myapp'
   - name: tag
-    value: '$(Build.SourceBranchName)-$(Build.BuildId)'  # e.g., master-61
+    value: '$(Build.SourceBranchName)-$(Build.BuildId)'
   
   # AKS Namespaces
   - name: devNamespace
@@ -304,7 +304,7 @@ stages:
     - job: BuildJob
       displayName: 'Build and Push to ACR'
       pool: 'my-linux-agent'
-      timeoutInMinutes: 120  #  ADDED: Prevent timeout
+      timeoutInMinutes: 120
       
       steps:
       # Step 1: Checkout code
@@ -320,7 +320,7 @@ stages:
       # Step 3: Restore dependencies
       - task: DotNetCoreCLI@2
         displayName: 'Restore dependencies'
-        continueOnError: true  #  ADDED: Don't fail pipeline on restore issues
+        continueOnError: true
         inputs:
           command: 'restore'
           projects: '**/*.csproj'
@@ -336,7 +336,7 @@ stages:
       # Step 5: Run tests
       - task: DotNetCoreCLI@2
         displayName: 'Run tests'
-        continueOnError: true  #  ADDED: Continue even if tests fail
+        continueOnError: true
         inputs:
           command: 'test'
           projects: '**/*Tests/*.csproj'
@@ -352,7 +352,7 @@ stages:
       # Step 7: Build and push Docker image
       - task: Docker@2
         displayName: 'Build and Push Docker Image'
-        timeoutInMinutes: 30  #  ADDED: Specific timeout for Docker build
+        timeoutInMinutes: 30
         inputs:
           command: 'buildAndPush'
           repository: '$(imageName)'
@@ -360,8 +360,8 @@ stages:
           buildContext: '$(System.DefaultWorkingDirectory)'
           containerRegistry: 'acr-connection'
           tags: |
-            $(tag)           #  FIXED: Use specific version tag (master-61)
-            #  REMOVED: 'latest' - causes caching issues
+            $(tag)
+            latest
       
       # Step 8: Publish Kubernetes manifests
       - task: PublishBuildArtifacts@1
@@ -370,19 +370,16 @@ stages:
           PathtoPublish: '$(System.DefaultWorkingDirectory)/kubernetes'
           ArtifactName: 'manifests'
       
-      #  ADDED: Verify image was pushed
+      # Step 9: Verify image was pushed
       - task: Bash@3
         displayName: 'Verify Image in ACR'
         condition: succeeded()
         inputs:
           targetType: 'inline'
           script: |
-            echo " Verifying image: $(acrLoginServer)/$(imageName):$(tag)"
-            az acr repository show-tags \
-              --name $(acrName) \
-              --repository $(imageName) \
-              --output table
-            echo " Image successfully stored in ACR"
+            echo "Verifying image: $(acrLoginServer)/$(imageName):$(tag)"
+            az acr repository show-tags --name $(acrName) --repository $(imageName) --output table
+            echo "Image successfully stored in ACR"
 
   # STAGE 2: DEV DEPLOYMENT (Automatic)
   - stage: Dev
@@ -395,129 +392,81 @@ stages:
       displayName: 'Deploy to Dev AKS'
       environment: 'dev'
       pool: 'my-linux-agent'
-      timeoutInMinutes: 30  #  ADDED: Prevent timeout
+      timeoutInMinutes: 30
       strategy:
         runOnce:
           deploy:
             steps:
-            #  ADDED: Validate kubectl and Minikube
+            # Step 1: Validate Environment
             - task: Bash@3
               displayName: 'Validate Environment'
               inputs:
                 targetType: 'inline'
                 script: |
-                  echo "=== Environment Validation ==="
-                  echo "Agent: $(hostname)"
                   kubectl version --client
-                  minikube status || echo "Minikube not found"
                   kubectl config current-context
                   kubectl config use-context minikube
-                  echo " Environment ready"
             
-            # Step 1: Download manifests
+            # Step 2: Download manifests
             - download: current
               artifact: manifests
             
-            #  ADDED: Ensure ACR pull secret exists
+            # Step 3: Ensure ACR Pull Secret
             - task: Bash@3
               displayName: 'Ensure ACR Pull Secret'
               inputs:
                 targetType: 'inline'
                 script: |
-                  echo "Creating/updating ACR pull secret..."
                   kubectl config use-context minikube
                   
-                  # Get ACR credentials
                   az acr update -n $(acrName) --admin-enabled true
                   USERNAME=$(az acr credential show --name $(acrName) --query "username" -o tsv)
                   PASSWORD=$(az acr credential show --name $(acrName) --query "passwords[0].value" -o tsv)
                   
-                  # Create or update secret
                   kubectl create secret docker-registry acr-secret \
                     --namespace $(devNamespace) \
                     --docker-server=$(acrLoginServer) \
                     --docker-username=$USERNAME \
                     --docker-password=$PASSWORD \
                     --dry-run=client -o yaml | kubectl apply -f -
-                  
-                  echo " ACR pull secret ready"
             
-            # Step 2: Create namespace if not exists
+            # Step 4: Create namespace if not exists
             - task: Bash@3
               displayName: 'Create dev namespace'
               inputs:
                 targetType: 'inline'
                 script: |
                   kubectl config use-context minikube
-                  echo "Creating namespace: $(devNamespace)"
                   kubectl create namespace $(devNamespace) --dry-run=client -o yaml | kubectl apply -f -
-                  echo " Namespace ready"
             
-            # Step 3: Replace image placeholder in deployment
+            # Step 5: Replace image placeholder in deployment
             - task: Bash@3
               displayName: 'Update deployment with image tag'
               inputs:
                 targetType: 'inline'
                 script: |
-                  echo "Updating image to: $(acrLoginServer)/$(imageName):$(tag)"
-                  # Backup original
-                  cp $(Pipeline.Workspace)/manifests/deployment.yaml $(Pipeline.Workspace)/manifests/deployment.yaml.backup
-                  # Replace placeholder
                   sed -i "s|CONTAINER_IMAGE_PLACEHOLDER|$(acrLoginServer)/$(imageName):$(tag)|g" $(Pipeline.Workspace)/manifests/deployment.yaml
-                  echo " Deployment updated with versioned tag"
             
-            # Step 4: Deploy to dev namespace
+            # Step 6: Deploy to dev namespace
             - task: Bash@3
               displayName: 'Deploy to Dev'
-              timeoutInMinutes: 10  #  ADDED: Specific timeout
+              timeoutInMinutes: 10
               inputs:
                 targetType: 'inline'
                 script: |
-                  set -e  # Exit on error
                   kubectl config use-context minikube
-                  
-                  echo "=== Deploying $(acrLoginServer)/$(imageName):$(tag) ==="
                   kubectl apply -f $(Pipeline.Workspace)/manifests -n $(devNamespace)
-                  
-                  #  ADDED: Wait for deployment
-                  echo "Waiting for rollout..."
                   kubectl rollout status deployment/myapp-deployment -n $(devNamespace) --timeout=120s
-                  
-                  #  ADDED: Verify deployment
-                  echo "=== Verification ==="
-                  kubectl get pods -n $(devNamespace) -o wide
-                  kubectl get svc -n $(devNamespace) 2>/dev/null || echo "No services found"
-                  
-                  echo " Deployment successful!"
             
-            #  ADDED: Health check
+            # Step 7: Health check
             - task: Bash@3
               displayName: 'Health Check'
               condition: succeeded()
               inputs:
                 targetType: 'inline'
                 script: |
-                  echo "=== Application Health Check ==="
                   kubectl config use-context minikube
-                  
-                  # Wait for pod to be ready
                   kubectl wait --for=condition=ready pod -l app=myapp -n $(devNamespace) --timeout=60s
-                  
-                  # Test the application
-                  echo "Testing endpoint..."
-                  kubectl port-forward deployment/myapp-deployment 8080:8080 -n $(devNamespace) &
-                  PID=$!
-                  sleep 5
-                  
-                  if curl -s http://localhost:8080 > /dev/null; then
-                    echo " Application is healthy and responding"
-                    curl -s http://localhost:8080 | grep -o "<title>[^<]*</title>" || echo " HTML response received"
-                  else
-                    echo " Application not responding"
-                  fi
-                  
-                  kill $PID 2>/dev/null
-                  echo " Dev deployment completed successfully!"
 
   # STAGE 3: TEST DEPLOYMENT (Requires approval)
   - stage: Test
@@ -535,9 +484,8 @@ stages:
         runOnce:
           deploy:
             steps:
-            #  ADDED: Same validation as Dev stage
             - task: Bash@3
-              displayName: 'Validate Environment'
+              displayName: 'Set kubectl context'
               inputs:
                 targetType: 'inline'
                 script: |
@@ -545,24 +493,6 @@ stages:
             
             - download: current
               artifact: manifests
-            
-            #  ADDED: ACR secret for test namespace
-            - task: Bash@3
-              displayName: 'Ensure ACR Pull Secret (Test)'
-              inputs:
-                targetType: 'inline'
-                script: |
-                  kubectl config use-context minikube
-                  az acr update -n $(acrName) --admin-enabled true
-                  USERNAME=$(az acr credential show --name $(acrName) --query "username" -o tsv)
-                  PASSWORD=$(az acr credential show --name $(acrName) --query "passwords[0].value" -o tsv)
-                  
-                  kubectl create secret docker-registry acr-secret \
-                    --namespace $(testNamespace) \
-                    --docker-server=$(acrLoginServer) \
-                    --docker-username=$USERNAME \
-                    --docker-password=$PASSWORD \
-                    --dry-run=client -o yaml | kubectl apply -f -
             
             - task: Bash@3
               displayName: 'Create test namespace'
@@ -577,11 +507,9 @@ stages:
               inputs:
                 targetType: 'inline'
                 script: |
-                  set -e
                   kubectl config use-context minikube
                   kubectl apply -f $(Pipeline.Workspace)/manifests -n $(testNamespace)
                   kubectl rollout status deployment/myapp-deployment -n $(testNamespace) --timeout=120s
-                  echo " Test deployment successful!"
 
   # STAGE 4: PRODUCTION DEPLOYMENT (Requires approval)
   - stage: Prod
@@ -599,9 +527,8 @@ stages:
         runOnce:
           deploy:
             steps:
-            #  ADDED: Same validation as Dev stage
             - task: Bash@3
-              displayName: 'Validate Environment'
+              displayName: 'Set kubectl context'
               inputs:
                 targetType: 'inline'
                 script: |
@@ -609,24 +536,6 @@ stages:
             
             - download: current
               artifact: manifests
-            
-            #  ADDED: ACR secret for prod namespace
-            - task: Bash@3
-              displayName: 'Ensure ACR Pull Secret (Prod)'
-              inputs:
-                targetType: 'inline'
-                script: |
-                  kubectl config use-context minikube
-                  az acr update -n $(acrName) --admin-enabled true
-                  USERNAME=$(az acr credential show --name $(acrName) --query "username" -o tsv)
-                  PASSWORD=$(az acr credential show --name $(acrName) --query "passwords[0].value" -o tsv)
-                  
-                  kubectl create secret docker-registry acr-secret \
-                    --namespace $(prodNamespace) \
-                    --docker-server=$(acrLoginServer) \
-                    --docker-username=$USERNAME \
-                    --docker-password=$PASSWORD \
-                    --dry-run=client -o yaml | kubectl apply -f -
             
             - task: Bash@3
               displayName: 'Create prod namespace'
@@ -641,8 +550,6 @@ stages:
               inputs:
                 targetType: 'inline'
                 script: |
-                  set -e
                   kubectl config use-context minikube
                   kubectl apply -f $(Pipeline.Workspace)/manifests -n $(prodNamespace)
                   kubectl rollout status deployment/myapp-deployment -n $(prodNamespace) --timeout=120s
-                  echo " Production deployment successful!"
